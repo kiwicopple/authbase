@@ -1,33 +1,75 @@
-
+-- Create a user
+CREATE OR REPLACE FUNCTION public.register (email text, pass text)
+  RETURNS int
+  LANGUAGE plpgsql
+  AS $$
+DECLARE
+  auth_user_id int;
+BEGIN
+  INSERT INTO secure.users (email, pass, role)
+    VALUES (register.email, register.pass, 'anon')
+  RETURNING
+    id INTO auth_user_id;
+  RETURN auth_user_id;
+END;
+$$ SET search_path = public, secure;
 
 -- login should be on your exposed schema
 
 CREATE OR REPLACE FUNCTION public.login (email text, pass text)
-  RETURNS basic_auth.jwt_token
+  RETURNS jsonb
+  LANGUAGE plpgsql
   AS $$
 DECLARE
-  _role name;
-  result basic_auth.jwt_token;
+  auth_user_id int;
 BEGIN
-  -- check email and password
-  SELECT
-    basic_auth.user_role (email,
-      pass) INTO _role;
-  IF _role IS NULL THEN
-    raise invalid_password
-    USING message = 'invalid user or password';
-  END IF;
-  SELECT
-    basic_auth.sign(row_to_json(r), 'reallyreallyreallyreallyverysafe') AS token
+  auth_user_id := secure.verify_login (email,
+    pass);
+  CASE WHEN auth_user_id IS NOT NULL THEN
+    -- Logged
+    RETURN row_to_json(t)
   FROM (
     SELECT
-      _role AS ROLE,
-      login.email AS email,
-      extract(epoch FROM now())::integer + 60 * 60 AS exp) r INTO result;
-    RETURN result;
+      users.email,
+      users.role
+    FROM
+      secure.users
+    WHERE
+      id = auth_user_id) t;
+ELSE
+  -- Incorrect user
+  raise invalid_password
+  USING message = 'Invalid email or password.';
+END CASE;
 END;
-$$
-LANGUAGE plpgsql
-SET search_path = public, secure;
+$$ SET search_path = public, secure;
 
-grant execute on function public.login(text,text) to anon;
+GRANT EXECUTE ON FUNCTION public.login (text, text)
+TO anon;
+
+CREATE OR REPLACE FUNCTION public.update_password (email text, old_pass text, new_pass text)
+  RETURNS jsonb
+  LANGUAGE plpgsql
+  AS $$
+DECLARE
+  auth_user_id int8;
+BEGIN
+  auth_user_id := verify_login (email,
+    old_pass);
+  IF auth_user_id IS NOT NULL THEN
+    -- Set password to new password
+    UPDATE
+      secure.users
+    SET
+      pass = new_pass
+    WHERE
+      id = auth_user_id;
+    RETURN json_build_object('result', TRUE, 'user_id', auth_user_id, 'message', 'Password changed');
+  ELSE
+    -- Incorrect user
+    raise invalid_password
+    USING message = 'Invalid email or password.';
+  END IF;
+END;
+$$ SET search_path = public, secure;
+
